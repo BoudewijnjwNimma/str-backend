@@ -5,8 +5,10 @@ function airroiHeaders(apiKey) {
 }
 
 async function geocode(adres) {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&addressdetails=1&limit=1`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'str-backend/1.0' } });
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&addressdetails=1&limit=1`,
+    { headers: { 'User-Agent': 'str-backend/1.0' } }
+  );
   if (!res.ok) throw new Error(`Geocoding mislukt: ${res.status}`);
   const results = await res.json();
   if (!results.length) throw new Error(`Adres niet gevonden: ${adres}`);
@@ -21,7 +23,7 @@ async function geocode(adres) {
   };
 }
 
-async function getAirroiData(location, apiKey) {
+async function getComparables(location, apiKey) {
   const params = new URLSearchParams({
     latitude: location.latitude,
     longitude: location.longitude,
@@ -30,43 +32,50 @@ async function getAirroiData(location, apiKey) {
     guests: '4',
     currency: 'native',
   });
-
-  const [compResult, marketResult] = await Promise.allSettled([
-    fetch(`${AIRROI}/listings/comparables?${params}`, { headers: airroiHeaders(apiKey) })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`comparables ${r.status}`)))),
-    fetch(`${AIRROI}/listings/search/market`, {
-      method: 'POST',
-      headers: airroiHeaders(apiKey),
-      body: JSON.stringify({
-        market: { country: location.country, region: location.region, locality: location.locality },
-        pagination: { pageSize: 10 },
-        currency: 'native',
-      }),
-    }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`search/market ${r.status}`)))),
-  ]);
-
-  const firstMetrics = compResult.status === 'fulfilled'
-    ? compResult.value?.listings?.[0]?.performance_metrics ?? null
-    : null;
-
-  const marketListings = marketResult.status === 'fulfilled'
-    ? marketResult.value?.results ?? []
-    : [];
-
-  function avgMetric(field) {
-    const vals = marketListings.map((l) => l?.performance_metrics?.[field]).filter((v) => v != null);
-    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
-  }
-
-  return {
-    bruto_jaarhuur: firstMetrics?.ttm_revenue ?? avgMetric('ttm_revenue'),
-    bezetting: firstMetrics?.ttm_occupancy ?? avgMetric('ttm_occupancy'),
-    gemiddelde_dagprijs: firstMetrics?.ttm_avg_rate ?? avgMetric('ttm_avg_rate'),
-  };
+  const res = await fetch(`${AIRROI}/listings/comparables?${params}`, {
+    headers: airroiHeaders(apiKey),
+  });
+  if (!res.ok) throw new Error(`comparables ${res.status}: ${await res.text()}`);
+  return res.json();
 }
 
-function round2(n) {
-  return Math.round(n * 100) / 100;
+async function searchByMarket(location, apiKey) {
+  const res = await fetch(`${AIRROI}/listings/search/market`, {
+    method: 'POST',
+    headers: airroiHeaders(apiKey),
+    body: JSON.stringify({
+      market: { country: location.country, region: location.region, locality: location.locality },
+      pagination: { pageSize: 10 },
+      currency: 'native',
+    }),
+  });
+  if (!res.ok) throw new Error(`search/market ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+function avgMetric(listings, field) {
+  const vals = listings.map((l) => l?.performance_metrics?.[field]).filter((v) => v != null);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+}
+
+async function getAirroiMetrics(location, apiKey) {
+  // Primair: comparables (1 call)
+  const comp = await getComparables(location, apiKey);
+  const first = comp?.listings?.[0]?.performance_metrics ?? null;
+
+  if (first?.ttm_revenue) {
+    return { ...first, bron_detail: 'comparables' };
+  }
+
+  // Fallback: marktgemiddelde (alleen indien comparables leeg)
+  const market = await searchByMarket(location, apiKey);
+  const listings = market?.results ?? [];
+  return {
+    ttm_revenue: avgMetric(listings, 'ttm_revenue'),
+    ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
+    ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
+    bron_detail: 'search/market',
+  };
 }
 
 export default async function handler(req, res) {
@@ -80,7 +89,6 @@ export default async function handler(req, res) {
   const {
     adres,
     vraagprijs,
-    slaapkamers = 2,
     target_rendement = 6,
     kosten = {},
   } = req.body || {};
@@ -106,47 +114,32 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    const airroi = await getAirroiData(location, apiKey);
-    const bruto = airroi.bruto_jaarhuur;
+    const airroi = await getAirroiMetrics(location, apiKey);
+    const bruto = airroi.ttm_revenue;
 
     if (!bruto) {
       return res.status(502).json({ error: 'Geen AirROI data beschikbaar voor dit adres' });
     }
 
-    // Kosten berekening
-    const airbnb_fee    = bruto * (airbnb_fee_pct / 100);
+    const airbnb_fee     = bruto * (airbnb_fee_pct / 100);
     const management_fee = bruto * (management_fee_pct / 100);
-    const property_tax  = vraagprijs * (property_tax_pct / 100);
-    const totale_kosten = airbnb_fee + management_fee + property_tax + verzekering + onderhoud + overig;
+    const property_tax   = vraagprijs * (property_tax_pct / 100);
+    const netto_jaarhuur = bruto - airbnb_fee - management_fee - property_tax - verzekering - onderhoud - overig;
 
-    const netto_jaarhuur = bruto - totale_kosten;
-
-    // Kosten koper: 11% van vraagprijs (eenmalig)
-    const kosten_koper = vraagprijs * 0.11;
-
-    // Waardestijging: 2,5% per jaar van vraagprijs
+    const kosten_koper       = vraagprijs * 0.11;
     const waardestijging_jaar = vraagprijs * 0.025;
+    const max_bod            = netto_jaarhuur / (target_rendement / 100) - kosten_koper;
+    const verschil           = vraagprijs - max_bod;
+    const verschil_pct       = Math.round(Math.abs(verschil) / Math.max(vraagprijs, max_bod) * 100);
+    const totaal_rendement_pct = Math.round(
+      ((netto_jaarhuur + waardestijging_jaar) / (vraagprijs + kosten_koper)) * 10000
+    ) / 100;
 
-    // Maximaal bod: netto / rendement - kosten koper
-    const max_bod = (netto_jaarhuur / (target_rendement / 100)) - kosten_koper;
-
-    // Verschil vraagprijs vs max bod
-    const verschil = vraagprijs - max_bod;
-    const verschil_pct = Math.round(Math.abs(verschil) / Math.max(vraagprijs, max_bod) * 100);
-
-    let advies;
-    if (verschil > 0) {
-      advies = `Vraagprijs ligt ${verschil_pct}% boven je maximale bod`;
-    } else if (verschil < 0) {
-      advies = `Vraagprijs ligt ${verschil_pct}% onder je maximale bod`;
-    } else {
-      advies = 'Vraagprijs is gelijk aan je maximale bod';
-    }
-
-    // Totaalrendement: (netto + waardestijging) / (vraagprijs + kosten koper) * 100
-    const totaal_rendement_pct = round2(
-      ((netto_jaarhuur + waardestijging_jaar) / (vraagprijs + kosten_koper)) * 100
-    );
+    const advies = verschil > 0
+      ? `Vraagprijs ligt ${verschil_pct}% boven je maximale bod`
+      : verschil < 0
+      ? `Vraagprijs ligt ${verschil_pct}% onder je maximale bod`
+      : 'Vraagprijs is gelijk aan je maximale bod';
 
     return res.status(200).json({
       max_bod: Math.round(max_bod),
@@ -155,8 +148,8 @@ export default async function handler(req, res) {
       advies,
       netto_jaarhuur: Math.round(netto_jaarhuur),
       bruto_jaarhuur: Math.round(bruto),
-      bezetting: airroi.bezetting != null ? round2(airroi.bezetting) : null,
-      gemiddelde_dagprijs: airroi.gemiddelde_dagprijs != null ? Math.round(airroi.gemiddelde_dagprijs) : null,
+      bezetting: airroi.ttm_occupancy != null ? Math.round(airroi.ttm_occupancy * 1000) / 1000 : null,
+      gemiddelde_dagprijs: airroi.ttm_avg_rate != null ? Math.round(airroi.ttm_avg_rate) : null,
       waardestijging_jaar: Math.round(waardestijging_jaar),
       totaal_rendement_pct,
       locatie: [location.locality, location.region, location.country].filter(Boolean).join(', '),

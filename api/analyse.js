@@ -5,8 +5,10 @@ function airroiHeaders(apiKey) {
 }
 
 async function geocode(adres) {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&addressdetails=1&limit=1`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'str-backend/1.0' } });
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(adres)}&format=json&addressdetails=1&limit=1`,
+    { headers: { 'User-Agent': 'str-backend/1.0' } }
+  );
   if (!res.ok) throw new Error(`Geocoding mislukt: ${res.status}`);
   const results = await res.json();
   if (!results.length) throw new Error(`Adres niet gevonden: ${adres}`);
@@ -42,11 +44,7 @@ async function searchByMarket(location, apiKey) {
     method: 'POST',
     headers: airroiHeaders(apiKey),
     body: JSON.stringify({
-      market: {
-        country: location.country,
-        region: location.region,
-        locality: location.locality,
-      },
+      market: { country: location.country, region: location.region, locality: location.locality },
       pagination: { pageSize: 10 },
       currency: 'native',
     }),
@@ -55,12 +53,9 @@ async function searchByMarket(location, apiKey) {
   return res.json();
 }
 
-function avg(listings, field) {
-  const values = listings
-    .map((l) => l?.performance_metrics?.[field])
-    .filter((v) => v != null && !isNaN(v));
-  if (!values.length) return null;
-  return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100;
+function avgMetric(listings, field) {
+  const vals = listings.map((l) => l?.performance_metrics?.[field]).filter((v) => v != null);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
 }
 
 export default async function handler(req, res) {
@@ -79,50 +74,40 @@ export default async function handler(req, res) {
 
   try {
     const location = await geocode(adres);
-
     if (!location.locality || !location.country) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    const [compResult, marketResult] = await Promise.allSettled([
-      getComparables(location, apiKey),
-      searchByMarket(location, apiKey),
-    ]);
+    // Primair: comparables op coördinaten (1 call)
+    let metrics = null;
+    let bron_detail = 'comparables';
 
-    // Endpoint A: eerste comparable listing als primaire bron
-    const comp = compResult.status === 'fulfilled' ? compResult.value : null;
-    const firstListing = comp?.listings?.[0]?.performance_metrics ?? null;
+    const comp = await getComparables(location, apiKey);
+    const first = comp?.listings?.[0]?.performance_metrics ?? null;
 
-    // Endpoint B: gemiddelde over alle market results
-    const market = marketResult.status === 'fulfilled' ? marketResult.value : null;
-    const marketListings = market?.results ?? [];
-
-    // Primair: comparables (locatiespecifiek), fallback: marktgemiddelde
-    const verwacht_jaarhuur =
-      firstListing?.ttm_revenue ?? avg(marketListings, 'ttm_revenue');
-    const bezetting =
-      firstListing?.ttm_occupancy ?? avg(marketListings, 'ttm_occupancy');
-    const gemiddelde_dagprijs =
-      firstListing?.ttm_avg_rate ?? avg(marketListings, 'ttm_avg_rate');
-
-    const response = {
-      adres,
-      locatie: [location.locality, location.region, location.country].filter(Boolean).join(', '),
-      verwacht_jaarhuur: verwacht_jaarhuur != null ? Math.round(verwacht_jaarhuur) : null,
-      bezetting,
-      gemiddelde_dagprijs: gemiddelde_dagprijs != null ? Math.round(gemiddelde_dagprijs) : null,
-      bron: 'airroi',
-    };
-
-    // Debug alleen meesturen als beide calls faalden
-    if (compResult.status === 'rejected' && marketResult.status === 'rejected') {
-      response.debug = {
-        comparables_error: compResult.reason?.message,
-        market_error: marketResult.reason?.message,
+    if (first?.ttm_revenue) {
+      metrics = first;
+    } else {
+      // Fallback: marktgemiddelde (2e call, alleen indien nodig)
+      bron_detail = 'search/market';
+      const market = await searchByMarket(location, apiKey);
+      const listings = market?.results ?? [];
+      metrics = {
+        ttm_revenue: avgMetric(listings, 'ttm_revenue'),
+        ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
+        ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
       };
     }
 
-    return res.status(200).json(response);
+    return res.status(200).json({
+      adres,
+      locatie: [location.locality, location.region, location.country].filter(Boolean).join(', '),
+      verwacht_jaarhuur: metrics.ttm_revenue != null ? Math.round(metrics.ttm_revenue) : null,
+      bezetting: metrics.ttm_occupancy != null ? Math.round(metrics.ttm_occupancy * 1000) / 1000 : null,
+      gemiddelde_dagprijs: metrics.ttm_avg_rate != null ? Math.round(metrics.ttm_avg_rate) : null,
+      bron: 'airroi',
+      bron_detail,
+    });
   } catch (err) {
     return res.status(502).json({ error: err.message });
   }
