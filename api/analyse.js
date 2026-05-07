@@ -1,3 +1,45 @@
+const BASE = 'https://api.airroi.com';
+
+function airroiHeaders(apiKey) {
+  return { 'x-api-key': apiKey, 'Content-Type': 'application/json' };
+}
+
+async function findMarket(city, apiKey) {
+  const res = await fetch(
+    `${BASE}/markets/find-by-name?name=${encodeURIComponent(city)}`,
+    { headers: airroiHeaders(apiKey) }
+  );
+  if (!res.ok) throw new Error(`find-by-name ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function getCalculator(market, apiKey) {
+  const res = await fetch(
+    `${BASE}/listings/calculator?locality=${encodeURIComponent(market.locality)}&region=${encodeURIComponent(market.region)}&country=${encodeURIComponent(market.country)}&bedrooms=2&guests=4&currency=usd`,
+    { headers: airroiHeaders(apiKey) }
+  );
+  if (!res.ok) throw new Error(`calculator ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function getMarketMetric(endpoint, market, apiKey) {
+  const res = await fetch(`${BASE}${endpoint}`, {
+    method: 'POST',
+    headers: airroiHeaders(apiKey),
+    body: JSON.stringify({
+      market: {
+        country: market.country,
+        region: market.region,
+        locality: market.locality,
+      },
+      currency: 'usd',
+      num_months: 12,
+    }),
+  });
+  if (!res.ok) throw new Error(`${endpoint} ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -12,62 +54,50 @@ export default async function handler(req, res) {
   const apiKey = process.env.AIRROI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'AIRROI_API_KEY niet geconfigureerd' });
 
-  // Extract city from address: "Calle X 1, Málaga" → "Málaga"
+  // "Calle Example 1, Málaga" → "Málaga"
   const parts = adres.split(',').map((p) => p.trim()).filter(Boolean);
   const city = parts[parts.length - 1];
 
   try {
-    // Stap 1: Zoek de markt op naam om country/region/locality te krijgen
-    const findRes = await fetch(
-      `https://api.airroi.com/markets/find-by-name?name=${encodeURIComponent(city)}`,
-      { headers: { 'X-API-KEY': apiKey } }
-    );
+    const market = await findMarket(city, apiKey);
 
-    if (!findRes.ok) {
-      const text = await findRes.text();
-      return res.status(502).json({ error: 'AirROI markt niet gevonden', detail: text });
-    }
+    const [calculator, occupancy, adr] = await Promise.all([
+      getCalculator(market, apiKey),
+      getMarketMetric('/markets/occupancy', market, apiKey),
+      getMarketMetric('/markets/avg_daily_rate', market, apiKey),
+    ]);
 
-    const market = await findRes.json();
+    // Jaarhuur: calculator geeft projected_revenue of annual_revenue
+    const verwacht_jaarhuur =
+      calculator.projected_revenue ??
+      calculator.annual_revenue ??
+      calculator.revenue ??
+      null;
 
-    // Stap 2: Haal alle metrics op voor deze markt
-    const metricsRes = await fetch('https://api.airroi.com/markets/all-metrics', {
-      method: 'POST',
-      headers: {
-        'X-API-KEY': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        market: {
-          country: market.country,
-          region: market.region,
-          locality: market.locality,
-        },
-        currency: 'usd',
-        num_months: 12,
-      }),
-    });
+    // Bezetting: ttm (trailing twelve months) of meest recente waarde
+    const bezetting =
+      occupancy.occupancy_rate ??
+      occupancy.ttm ??
+      occupancy.value ??
+      null;
 
-    if (!metricsRes.ok) {
-      const text = await metricsRes.text();
-      return res.status(502).json({ error: 'AirROI metrics ophalen mislukt', detail: text });
-    }
-
-    const metrics = await metricsRes.json();
-
-    // Jaarhuur = maandelijkse revenue * 12 (TTM = trailing twelve months)
-    const maandRevenue = metrics.revenue?.ttm ?? null;
-    const verwacht_jaarhuur = maandRevenue !== null ? Math.round(maandRevenue * 12) : null;
+    // Gemiddelde dagprijs
+    const gemiddelde_dagprijs =
+      adr.avg_daily_rate ??
+      adr.adr ??
+      adr.ttm ??
+      adr.value ??
+      null;
 
     return res.status(200).json({
       adres,
       locatie: [market.locality, market.region, market.country].filter(Boolean).join(', '),
       verwacht_jaarhuur,
-      bezetting: metrics.occupancy?.ttm ?? null,
-      gemiddelde_dagprijs: metrics.adr?.ttm ?? null,
+      bezetting,
+      gemiddelde_dagprijs,
       bron: 'airroi',
     });
   } catch (err) {
-    return res.status(500).json({ error: 'Onverwachte fout', detail: err.message });
+    return res.status(502).json({ error: err.message });
   }
 }
