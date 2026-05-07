@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Airbnb Yield Calculator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      background: #f9f9f9;
+      color: #1a1a1a;
+      width: 320px;
+      padding: 16px;
+    }
+
+    h1 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 14px;
+      color: #111;
+    }
+
+    .section {
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 8px;
+    }
+
+    label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      color: #444;
+    }
+
+    label span { flex: 1; }
+
+    input {
+      width: 110px;
+      padding: 4px 7px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 13px;
+      text-align: right;
+      background: #fafafa;
+      color: #111;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: #FF5A5F;
+      background: #fff;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #FF5A5F;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 4px;
+      transition: background 0.15s;
+    }
+
+    button:hover { background: #e04e53; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+
+    #status {
+      text-align: center;
+      font-size: 12px;
+      color: #888;
+      margin: 8px 0;
+      min-height: 16px;
+    }
+
+    #resultaat { display: none; }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .result-card {
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .result-card.highlight {
+      border-color: #FF5A5F;
+      background: #fff5f5;
+    }
+
+    .result-card.full {
+      grid-column: 1 / -1;
+    }
+
+    .result-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 3px;
+    }
+
+    .result-value {
+      font-size: 16px;
+      font-weight: 700;
+      color: #111;
+    }
+
+    .result-card.highlight .result-value { color: #FF5A5F; }
+
+    .advies {
+      font-size: 12px;
+      color: #555;
+      text-align: center;
+      padding: 8px 12px;
+      background: #fff;
+      border: 1px solid #e5e5e5;
+      border-radius: 8px;
+      margin-bottom: 6px;
+    }
+
+    .error {
+      color: #c0392b;
+      font-size: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>Airbnb Yield Calculator</h1>
+
+  <div class="section">
+    <div class="section-title">Woning</div>
+    <label><span>Adres</span><input type="text" id="adres" placeholder="Calle X, Málaga" style="width:150px; text-align:left;" /></label>
+    <label><span>Vraagprijs (€)</span><input type="number" id="vraagprijs" value="280000" min="0" /></label>
+    <label><span>Slaapkamers</span><input type="number" id="slaapkamers" value="2" min="1" max="10" /></label>
+    <label><span>Target rendement (%)</span><input type="number" id="target_rendement" value="6" min="1" max="30" step="0.5" /></label>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Kosten</div>
+    <label><span>Airbnb fee (%)</span><input type="number" id="airbnb_fee" value="3" min="0" max="20" step="0.5" /></label>
+    <label><span>Management fee (%)</span><input type="number" id="management_fee" value="20" min="0" max="50" step="0.5" /></label>
+    <label><span>Property tax (%)</span><input type="number" id="property_tax" value="1" min="0" max="5" step="0.1" /></label>
+  </div>
+
+  <button id="berekenBtn">Bereken max bod</button>
+  <div id="status"></div>
+
+  <div id="resultaat">
+    <div class="advies" id="advies"></div>
+    <div class="result-grid">
+      <div class="result-card highlight">
+        <div class="result-label">Max bod</div>
+        <div class="result-value" id="r-max-bod"></div>
+      </div>
+      <div class="result-card">
+        <div class="result-label">Vraagprijs</div>
+        <div class="result-value" id="r-vraagprijs"></div>
+      </div>
+      <div class="result-card">
+        <div class="result-label">Bruto jaarhuur</div>
+        <div class="result-value" id="r-bruto"></div>
+      </div>
+      <div class="result-card">
+        <div class="result-label">Netto jaarhuur</div>
+        <div class="result-value" id="r-netto"></div>
+      </div>
+      <div class="result-card">
+        <div class="result-label">Bezetting</div>
+        <div class="result-value" id="r-bezetting"></div>
+      </div>
+      <div class="result-card">
+        <div class="result-label">Gem. dagprijs</div>
+        <div class="result-value" id="r-dagprijs"></div>
+      </div>
+      <div class="result-card full highlight">
+        <div class="result-label">Totaalrendement</div>
+        <div class="result-value" id="r-rendement"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

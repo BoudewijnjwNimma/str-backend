@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Airbnb Yield Calculator",
+  "version": "1.0",
+  "description": "Bereken het maximale bod op een vakantieverhuurwoning op basis van AirROI data.",
+  "permissions": ["activeTab", "storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Airbnb Yield Calculator"
+  }
+}
