@@ -28,7 +28,7 @@ async function getComparables(location, apiKey) {
     bedrooms: '2',
     baths: '1',
     guests: '4',
-    currency: 'eur',
+    currency: 'native',
   });
   const res = await fetch(`${AIRROI}/listings/comparables?${params}`, {
     headers: airroiHeaders(apiKey),
@@ -47,8 +47,8 @@ async function searchByMarket(location, apiKey) {
         region: location.region,
         locality: location.locality,
       },
-      pagination: { page_size: 20 },
-      currency: 'eur',
+      pagination: { pageSize: 10 },
+      currency: 'native',
     }),
   });
   if (!res.ok) throw new Error(`search/market ${res.status}: ${await res.text()}`);
