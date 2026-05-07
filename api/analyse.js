@@ -23,12 +23,12 @@ async function geocode(adres) {
   };
 }
 
-async function getCalculator(adres, apiKey) {
+async function getCalculator(adres, apiKey, bedrooms = 2) {
   const params = new URLSearchParams({
     address: adres,
-    bedrooms: '2',
+    bedrooms: String(bedrooms),
     baths: '1',
-    guests: '4',
+    guests: String(bedrooms * 2),
     currency: 'native',
   });
   const res = await fetch(`${AIRROI}/calculator/estimate?${params}`, {
@@ -90,7 +90,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { adres } = req.body || {};
+  const { adres, slaapkamers = 2 } = req.body || {};
   if (!adres) return res.status(400).json({ error: 'Veld "adres" is verplicht' });
 
   const apiKey = process.env.AIRROI_API_KEY;
@@ -107,7 +107,7 @@ export default async function handler(req, res) {
     let aantal_comparables = 0;
 
     // Stap 1: calculator ($0,20)
-    const calcData = await getCalculator(adres, apiKey).catch(() => null);
+    const calcData = await getCalculator(adres, apiKey, slaapkamers).catch(() => null);
     const calcMetrics = extractCalcMetrics(calcData);
     if (calcMetrics) {
       metrics = calcMetrics;
@@ -152,6 +152,7 @@ export default async function handler(req, res) {
       aantal_comparables,
       bron: 'airroi',
       bron_detail,
+      debug_calc: calcData,
     });
   } catch (err) {
     return res.status(502).json({ error: err.message });

@@ -23,12 +23,12 @@ async function geocode(adres) {
   };
 }
 
-async function getCalculator(adres, apiKey) {
+async function getCalculator(adres, apiKey, bedrooms = 2) {
   const params = new URLSearchParams({
     address: adres,
-    bedrooms: '2',
+    bedrooms: String(bedrooms),
     baths: '1',
-    guests: '4',
+    guests: String(bedrooms * 2),
     currency: 'native',
   });
   const res = await fetch(`${AIRROI}/calculator/estimate?${params}`, {
@@ -82,9 +82,9 @@ function extractCalcMetrics(data) {
   };
 }
 
-async function getAirroiMetrics(adres, location, apiKey) {
+async function getAirroiMetrics(adres, location, apiKey, bedrooms = 2) {
   // Stap 1: calculator ($0,20)
-  const calcData = await getCalculator(adres, apiKey).catch(() => null);
+  const calcData = await getCalculator(adres, apiKey, bedrooms).catch(() => null);
   const calcMetrics = extractCalcMetrics(calcData);
   if (calcMetrics) {
     return { ...calcMetrics, bron_detail: 'calculator', aantal_comparables: 1 };
@@ -151,7 +151,7 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    const airroi = await getAirroiMetrics(adres, location, apiKey);
+    const airroi = await getAirroiMetrics(adres, location, apiKey, slaapkamers);
     const bruto = airroi.ttm_revenue;
 
     if (!bruto) {
