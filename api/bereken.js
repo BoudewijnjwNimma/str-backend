@@ -82,24 +82,16 @@ function extractCalcMetrics(data) {
 }
 
 async function getAirroiMetrics(adres, location, apiKey) {
-  // Parallel: calculator (primair) + comparables (fallback)
-  const [calcResult, compResult] = await Promise.allSettled([
-    getCalculator(adres, apiKey),
-    getComparables(location, apiKey),
-  ]);
-
-  // Primair: calculator
-  const calcMetrics = extractCalcMetrics(
-    calcResult.status === 'fulfilled' ? calcResult.value : null
-  );
+  // Stap 1: calculator ($0,20)
+  const calcData = await getCalculator(adres, apiKey).catch(() => null);
+  const calcMetrics = extractCalcMetrics(calcData);
   if (calcMetrics) {
     return { ...calcMetrics, bron_detail: 'calculator', aantal_comparables: 1 };
   }
 
-  // Fallback 1: gemiddelde van comparables
-  const listings = compResult.status === 'fulfilled'
-    ? (compResult.value?.listings ?? [])
-    : [];
+  // Stap 2: comparables ($0,10 extra, alleen indien nodig)
+  const comp = await getComparables(location, apiKey).catch(() => null);
+  const listings = comp?.listings ?? [];
   if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
     return {
       ttm_revenue: avgMetric(listings, 'ttm_revenue'),
@@ -110,7 +102,7 @@ async function getAirroiMetrics(adres, location, apiKey) {
     };
   }
 
-  // Fallback 2: marktgemiddelde
+  // Stap 3: search/market ($0,50 extra, alleen indien nodig)
   const market = await searchByMarket(location, apiKey);
   const marketListings = market?.results ?? [];
   return {

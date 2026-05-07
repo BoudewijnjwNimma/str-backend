@@ -102,31 +102,23 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    // Parallel: calculator (primair) + comparables (fallback)
-    const [calcResult, compResult] = await Promise.allSettled([
-      getCalculator(adres, apiKey),
-      getComparables(location, apiKey),
-    ]);
-
     let metrics = null;
     let bron_detail = null;
     let aantal_comparables = 0;
 
-    // Primair: calculator
-    const calcMetrics = extractCalcMetrics(
-      calcResult.status === 'fulfilled' ? calcResult.value : null
-    );
+    // Stap 1: calculator ($0,20)
+    const calcData = await getCalculator(adres, apiKey).catch(() => null);
+    const calcMetrics = extractCalcMetrics(calcData);
     if (calcMetrics) {
       metrics = calcMetrics;
       bron_detail = 'calculator';
       aantal_comparables = 1;
     }
 
-    // Fallback 1: gemiddelde van comparables
+    // Stap 2: comparables ($0,10 extra, alleen indien nodig)
     if (!metrics) {
-      const listings = compResult.status === 'fulfilled'
-        ? (compResult.value?.listings ?? [])
-        : [];
+      const comp = await getComparables(location, apiKey).catch(() => null);
+      const listings = comp?.listings ?? [];
       if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
         metrics = {
           ttm_revenue: avgMetric(listings, 'ttm_revenue'),
@@ -138,9 +130,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // Fallback 2: marktgemiddelde
+    // Stap 3: search/market ($0,50 extra, alleen indien nodig)
     if (!metrics) {
-      bron_detail = 'search/market';
       const market = await searchByMarket(location, apiKey);
       const marketListings = market?.results ?? [];
       metrics = {
@@ -148,6 +139,7 @@ export default async function handler(req, res) {
         ttm_occupancy: avgMetric(marketListings, 'ttm_occupancy'),
         ttm_avg_rate: avgMetric(marketListings, 'ttm_avg_rate'),
       };
+      bron_detail = 'search/market';
       aantal_comparables = marketListings.length;
     }
 
