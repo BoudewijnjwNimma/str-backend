@@ -11,54 +11,56 @@ async function geocode(adres) {
   const results = await res.json();
   if (!results.length) throw new Error(`Adres niet gevonden: ${adres}`);
 
-  const addr = results[0].address;
+  const { address, lat, lon } = results[0];
   return {
-    country: addr.country ?? null,
-    region: addr.state ?? addr.province ?? null,
-    locality: addr.city ?? addr.town ?? addr.village ?? addr.municipality ?? null,
-    display: results[0].display_name ?? adres,
+    country: address.country ?? null,
+    region: address.state ?? address.province ?? null,
+    locality: address.city ?? address.town ?? address.village ?? address.municipality ?? null,
+    latitude: parseFloat(lat),
+    longitude: parseFloat(lon),
   };
 }
 
-async function postMarket(endpoint, market, apiKey) {
-  const res = await fetch(`${AIRROI}${endpoint}`, {
+async function getComparables(location, apiKey) {
+  const params = new URLSearchParams({
+    latitude: location.latitude,
+    longitude: location.longitude,
+    bedrooms: '2',
+    baths: '1',
+    guests: '4',
+    currency: 'eur',
+  });
+  const res = await fetch(`${AIRROI}/listings/comparables?${params}`, {
+    headers: airroiHeaders(apiKey),
+  });
+  if (!res.ok) throw new Error(`comparables ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+async function searchByMarket(location, apiKey) {
+  const res = await fetch(`${AIRROI}/listings/search/market`, {
     method: 'POST',
     headers: airroiHeaders(apiKey),
     body: JSON.stringify({
       market: {
-        country: market.country,
-        region: market.region,
-        locality: market.locality,
+        country: location.country,
+        region: location.region,
+        locality: location.locality,
       },
-      currency: 'usd',
-      num_months: 12,
+      pagination: { page_size: 20 },
+      currency: 'eur',
     }),
   });
-  if (!res.ok) throw new Error(`${endpoint} ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`search/market ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
-async function getCalculator(market, apiKey) {
-  const params = new URLSearchParams({
-    locality: market.locality,
-    region: market.region,
-    country: market.country,
-    bedrooms: '2',
-    guests: '4',
-    currency: 'usd',
-  });
-  const res = await fetch(`${AIRROI}/listings/calculator?${params}`, {
-    headers: airroiHeaders(apiKey),
-  });
-  if (!res.ok) throw new Error(`calculator ${res.status}: ${await res.text()}`);
-  return res.json();
-}
-
-function firstValue(obj, ...keys) {
-  for (const key of keys) {
-    if (obj?.[key] != null) return obj[key];
-  }
-  return null;
+function avg(listings, field) {
+  const values = listings
+    .map((l) => l?.performance_metrics?.[field])
+    .filter((v) => v != null && !isNaN(v));
+  if (!values.length) return null;
+  return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 100) / 100;
 }
 
 export default async function handler(req, res) {
@@ -76,40 +78,51 @@ export default async function handler(req, res) {
   if (!apiKey) return res.status(500).json({ error: 'AIRROI_API_KEY niet geconfigureerd' });
 
   try {
-    // Stap 1: adres → gestructureerde locatie via OpenStreetMap
-    const market = await geocode(adres);
+    const location = await geocode(adres);
 
-    if (!market.locality || !market.country) {
-      return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres', locatie: market });
+    if (!location.locality || !location.country) {
+      return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    // Stap 2: AirROI calls parallel
-    const [calculator, occupancy, adr] = await Promise.allSettled([
-      getCalculator(market, apiKey),
-      postMarket('/markets/occupancy', market, apiKey),
-      postMarket('/markets/avg_daily_rate', market, apiKey),
+    const [compResult, marketResult] = await Promise.allSettled([
+      getComparables(location, apiKey),
+      searchByMarket(location, apiKey),
     ]);
 
-    // Resultaten uitlezen — gebruik .value als de call gelukt is
-    const calc = calculator.status === 'fulfilled' ? calculator.value : null;
-    const occ = occupancy.status === 'fulfilled' ? occupancy.value : null;
-    const adrData = adr.status === 'fulfilled' ? adr.value : null;
+    // Endpoint A: eerste comparable listing als primaire bron
+    const comp = compResult.status === 'fulfilled' ? compResult.value : null;
+    const firstListing = comp?.listings?.[0]?.performance_metrics ?? null;
 
-    // Debug: stuur ruwe responses mee als iets null is
-    const debug = {};
-    if (!calc) debug.calculator_error = calculator.reason?.message;
-    if (!occ) debug.occupancy_error = occupancy.reason?.message;
-    if (!adrData) debug.adr_error = adr.reason?.message;
+    // Endpoint B: gemiddelde over alle market results
+    const market = marketResult.status === 'fulfilled' ? marketResult.value : null;
+    const marketListings = market?.results ?? [];
 
-    return res.status(200).json({
+    // Primair: comparables (locatiespecifiek), fallback: marktgemiddelde
+    const verwacht_jaarhuur =
+      firstListing?.ttm_revenue ?? avg(marketListings, 'ttm_revenue');
+    const bezetting =
+      firstListing?.ttm_occupancy ?? avg(marketListings, 'ttm_occupancy');
+    const gemiddelde_dagprijs =
+      firstListing?.ttm_avg_rate ?? avg(marketListings, 'ttm_avg_rate');
+
+    const response = {
       adres,
-      locatie: [market.locality, market.region, market.country].filter(Boolean).join(', '),
-      verwacht_jaarhuur: firstValue(calc, 'projected_revenue', 'annual_revenue', 'revenue', 'projected_annual_revenue'),
-      bezetting: firstValue(occ, 'occupancy_rate', 'ttm', 'value', 'rate'),
-      gemiddelde_dagprijs: firstValue(adrData, 'avg_daily_rate', 'adr', 'ttm', 'value'),
+      locatie: [location.locality, location.region, location.country].filter(Boolean).join(', '),
+      verwacht_jaarhuur: verwacht_jaarhuur != null ? Math.round(verwacht_jaarhuur) : null,
+      bezetting,
+      gemiddelde_dagprijs: gemiddelde_dagprijs != null ? Math.round(gemiddelde_dagprijs) : null,
       bron: 'airroi',
-      ...(Object.keys(debug).length ? { debug } : {}),
-    });
+    };
+
+    // Debug alleen meesturen als beide calls faalden
+    if (compResult.status === 'rejected' && marketResult.status === 'rejected') {
+      response.debug = {
+        comparables_error: compResult.reason?.message,
+        market_error: marketResult.reason?.message,
+      };
+    }
+
+    return res.status(200).json(response);
   } catch (err) {
     return res.status(502).json({ error: err.message });
   }
