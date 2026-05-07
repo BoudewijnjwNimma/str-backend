@@ -73,14 +73,13 @@ function avgMetric(listings, field) {
   return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
 }
 
-// Normaliseer calculator response — probeer meerdere veldnamen
 function extractCalcMetrics(data) {
-  if (!data) return null;
-  const revenue = data.annual_revenue ?? data.projected_revenue ?? data.ttm_revenue ?? data.revenue ?? null;
-  const occupancy = data.occupancy_rate ?? data.occupancy ?? data.ttm_occupancy ?? null;
-  const adr = data.avg_daily_rate ?? data.adr ?? data.ttm_avg_rate ?? null;
-  if (revenue == null) return null;
-  return { ttm_revenue: revenue, ttm_occupancy: occupancy, ttm_avg_rate: adr };
+  if (!data?.revenue) return null;
+  return {
+    ttm_revenue: data.revenue,
+    ttm_occupancy: data.occupancy ?? null,
+    ttm_avg_rate: data.average_daily_rate ?? null,
+  };
 }
 
 export default async function handler(req, res) {
@@ -108,13 +107,7 @@ export default async function handler(req, res) {
     let aantal_comparables = 0;
 
     // Stap 1: calculator ($0,20)
-    let calcData = null;
-    let calcError = null;
-    try {
-      calcData = await getCalculator(adres, apiKey);
-    } catch (e) {
-      calcError = e.message;
-    }
+    const calcData = await getCalculator(adres, apiKey).catch(() => null);
     const calcMetrics = extractCalcMetrics(calcData);
     if (calcMetrics) {
       metrics = calcMetrics;
@@ -159,7 +152,6 @@ export default async function handler(req, res) {
       aantal_comparables,
       bron: 'airroi',
       bron_detail,
-      debug_calc: calcData ?? { error: calcError },
     });
   } catch (err) {
     return res.status(502).json({ error: err.message });

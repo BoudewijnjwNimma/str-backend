@@ -74,12 +74,12 @@ function avgMetric(listings, field) {
 }
 
 function extractCalcMetrics(data) {
-  if (!data) return null;
-  const revenue = data.annual_revenue ?? data.projected_revenue ?? data.ttm_revenue ?? data.revenue ?? null;
-  const occupancy = data.occupancy_rate ?? data.occupancy ?? data.ttm_occupancy ?? null;
-  const adr = data.avg_daily_rate ?? data.adr ?? data.ttm_avg_rate ?? null;
-  if (revenue == null) return null;
-  return { ttm_revenue: revenue, ttm_occupancy: occupancy, ttm_avg_rate: adr };
+  if (!data?.revenue) return null;
+  return {
+    ttm_revenue: data.revenue,
+    ttm_occupancy: data.occupancy ?? null,
+    ttm_avg_rate: data.average_daily_rate ?? null,
+  };
 }
 
 async function getAirroiMetrics(adres, location, apiKey) {
