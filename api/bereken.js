@@ -23,6 +23,20 @@ async function geocode(adres) {
   };
 }
 
+async function getCalculator(adres, apiKey) {
+  const params = new URLSearchParams({
+    address: adres,
+    bedrooms: '2',
+    guests: '4',
+    currency: 'native',
+  });
+  const res = await fetch(`${AIRROI}/calculator/estimate?${params}`, {
+    headers: airroiHeaders(apiKey),
+  });
+  if (!res.ok) throw new Error(`calculator ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 async function getComparables(location, apiKey) {
   const params = new URLSearchParams({
     latitude: location.latitude,
@@ -58,30 +72,53 @@ function avgMetric(listings, field) {
   return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
 }
 
-async function getAirroiMetrics(location, apiKey) {
-  // Primair: gemiddelde over alle comparables (1 call)
-  const comp = await getComparables(location, apiKey);
-  const listings = comp?.listings ?? [];
+function extractCalcMetrics(data) {
+  if (!data) return null;
+  const revenue = data.annual_revenue ?? data.projected_revenue ?? data.ttm_revenue ?? data.revenue ?? null;
+  const occupancy = data.occupancy_rate ?? data.occupancy ?? data.ttm_occupancy ?? null;
+  const adr = data.avg_daily_rate ?? data.adr ?? data.ttm_avg_rate ?? null;
+  if (revenue == null) return null;
+  return { ttm_revenue: revenue, ttm_occupancy: occupancy, ttm_avg_rate: adr };
+}
 
+async function getAirroiMetrics(adres, location, apiKey) {
+  // Parallel: calculator (primair) + comparables (fallback)
+  const [calcResult, compResult] = await Promise.allSettled([
+    getCalculator(adres, apiKey),
+    getComparables(location, apiKey),
+  ]);
+
+  // Primair: calculator
+  const calcMetrics = extractCalcMetrics(
+    calcResult.status === 'fulfilled' ? calcResult.value : null
+  );
+  if (calcMetrics) {
+    return { ...calcMetrics, bron_detail: 'calculator', aantal_comparables: 1 };
+  }
+
+  // Fallback 1: gemiddelde van comparables
+  const listings = compResult.status === 'fulfilled'
+    ? (compResult.value?.listings ?? [])
+    : [];
   if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
     return {
       ttm_revenue: avgMetric(listings, 'ttm_revenue'),
       ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
       ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
-      aantal_comparables: listings.length,
       bron_detail: 'comparables',
+      aantal_comparables: listings.length,
     };
   }
 
-  // Fallback: marktgemiddelde (alleen indien comparables leeg)
+  // Fallback 2: marktgemiddelde
   const market = await searchByMarket(location, apiKey);
   const marketListings = market?.results ?? [];
   return {
     ttm_revenue: avgMetric(marketListings, 'ttm_revenue'),
     ttm_occupancy: avgMetric(marketListings, 'ttm_occupancy'),
     ttm_avg_rate: avgMetric(marketListings, 'ttm_avg_rate'),
-    aantal_comparables: marketListings.length,
     bron_detail: 'search/market',
+    aantal_comparables: marketListings.length,
   };
 }
 
@@ -121,23 +158,23 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    const airroi = await getAirroiMetrics(location, apiKey);
+    const airroi = await getAirroiMetrics(adres, location, apiKey);
     const bruto = airroi.ttm_revenue;
 
     if (!bruto) {
       return res.status(502).json({ error: 'Geen AirROI data beschikbaar voor dit adres' });
     }
 
-    const airbnb_fee     = bruto * (airbnb_fee_pct / 100);
-    const management_fee = bruto * (management_fee_pct / 100);
-    const property_tax   = vraagprijs * (property_tax_pct / 100);
-    const netto_jaarhuur = bruto - airbnb_fee - management_fee - property_tax - verzekering - onderhoud - overig;
+    const airbnb_fee      = bruto * (airbnb_fee_pct / 100);
+    const management_fee  = bruto * (management_fee_pct / 100);
+    const property_tax    = vraagprijs * (property_tax_pct / 100);
+    const netto_jaarhuur  = bruto - airbnb_fee - management_fee - property_tax - verzekering - onderhoud - overig;
 
-    const kosten_koper       = vraagprijs * 0.11;
+    const kosten_koper        = vraagprijs * 0.11;
     const waardestijging_jaar = vraagprijs * 0.025;
-    const max_bod            = netto_jaarhuur / (target_rendement / 100) - kosten_koper;
-    const verschil           = vraagprijs - max_bod;
-    const verschil_pct       = Math.round(Math.abs(verschil) / Math.max(vraagprijs, max_bod) * 100);
+    const max_bod             = netto_jaarhuur / (target_rendement / 100) - kosten_koper;
+    const verschil            = vraagprijs - max_bod;
+    const verschil_pct        = Math.round(Math.abs(verschil) / Math.max(vraagprijs, max_bod) * 100);
     const totaal_rendement_pct = Math.round(
       ((netto_jaarhuur + waardestijging_jaar) / (vraagprijs + kosten_koper)) * 10000
     ) / 100;
@@ -160,6 +197,7 @@ export default async function handler(req, res) {
       waardestijging_jaar: Math.round(waardestijging_jaar),
       totaal_rendement_pct,
       aantal_comparables: airroi.aantal_comparables,
+      bron_detail: airroi.bron_detail,
       locatie: [location.locality, location.region, location.country].filter(Boolean).join(', '),
     });
   } catch (err) {

@@ -23,6 +23,20 @@ async function geocode(adres) {
   };
 }
 
+async function getCalculator(adres, apiKey) {
+  const params = new URLSearchParams({
+    address: adres,
+    bedrooms: '2',
+    guests: '4',
+    currency: 'native',
+  });
+  const res = await fetch(`${AIRROI}/calculator/estimate?${params}`, {
+    headers: airroiHeaders(apiKey),
+  });
+  if (!res.ok) throw new Error(`calculator ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 async function getComparables(location, apiKey) {
   const params = new URLSearchParams({
     latitude: location.latitude,
@@ -58,6 +72,16 @@ function avgMetric(listings, field) {
   return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
 }
 
+// Normaliseer calculator response — probeer meerdere veldnamen
+function extractCalcMetrics(data) {
+  if (!data) return null;
+  const revenue = data.annual_revenue ?? data.projected_revenue ?? data.ttm_revenue ?? data.revenue ?? null;
+  const occupancy = data.occupancy_rate ?? data.occupancy ?? data.ttm_occupancy ?? null;
+  const adr = data.avg_daily_rate ?? data.adr ?? data.ttm_avg_rate ?? null;
+  if (revenue == null) return null;
+  return { ttm_revenue: revenue, ttm_occupancy: occupancy, ttm_avg_rate: adr };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -78,32 +102,53 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    // Primair: gemiddelde over alle comparables (1 call)
+    // Parallel: calculator (primair) + comparables (fallback)
+    const [calcResult, compResult] = await Promise.allSettled([
+      getCalculator(adres, apiKey),
+      getComparables(location, apiKey),
+    ]);
+
     let metrics = null;
-    let bron_detail = 'comparables';
+    let bron_detail = null;
     let aantal_comparables = 0;
 
-    const comp = await getComparables(location, apiKey);
-    const listings = comp?.listings ?? [];
+    // Primair: calculator
+    const calcMetrics = extractCalcMetrics(
+      calcResult.status === 'fulfilled' ? calcResult.value : null
+    );
+    if (calcMetrics) {
+      metrics = calcMetrics;
+      bron_detail = 'calculator';
+      aantal_comparables = 1;
+    }
 
-    if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
-      aantal_comparables = listings.length;
-      metrics = {
-        ttm_revenue: avgMetric(listings, 'ttm_revenue'),
-        ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
-        ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
-      };
-    } else {
-      // Fallback: marktgemiddelde (2e call, alleen indien nodig)
+    // Fallback 1: gemiddelde van comparables
+    if (!metrics) {
+      const listings = compResult.status === 'fulfilled'
+        ? (compResult.value?.listings ?? [])
+        : [];
+      if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
+        metrics = {
+          ttm_revenue: avgMetric(listings, 'ttm_revenue'),
+          ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
+          ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
+        };
+        bron_detail = 'comparables';
+        aantal_comparables = listings.length;
+      }
+    }
+
+    // Fallback 2: marktgemiddelde
+    if (!metrics) {
       bron_detail = 'search/market';
       const market = await searchByMarket(location, apiKey);
       const marketListings = market?.results ?? [];
-      aantal_comparables = marketListings.length;
       metrics = {
         ttm_revenue: avgMetric(marketListings, 'ttm_revenue'),
         ttm_occupancy: avgMetric(marketListings, 'ttm_occupancy'),
         ttm_avg_rate: avgMetric(marketListings, 'ttm_avg_rate'),
       };
+      aantal_comparables = marketListings.length;
     }
 
     return res.status(200).json({
