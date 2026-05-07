@@ -27,6 +27,7 @@ async function getCalculator(adres, apiKey) {
   const params = new URLSearchParams({
     address: adres,
     bedrooms: '2',
+    baths: '1',
     guests: '4',
     currency: 'native',
   });
