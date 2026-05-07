@@ -78,24 +78,31 @@ export default async function handler(req, res) {
       return res.status(422).json({ error: 'Kon stad/land niet bepalen uit adres' });
     }
 
-    // Primair: comparables op coördinaten (1 call)
+    // Primair: gemiddelde over alle comparables (1 call)
     let metrics = null;
     let bron_detail = 'comparables';
+    let aantal_comparables = 0;
 
     const comp = await getComparables(location, apiKey);
-    const first = comp?.listings?.[0]?.performance_metrics ?? null;
+    const listings = comp?.listings ?? [];
 
-    if (first?.ttm_revenue) {
-      metrics = first;
-    } else {
-      // Fallback: marktgemiddelde (2e call, alleen indien nodig)
-      bron_detail = 'search/market';
-      const market = await searchByMarket(location, apiKey);
-      const listings = market?.results ?? [];
+    if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
+      aantal_comparables = listings.length;
       metrics = {
         ttm_revenue: avgMetric(listings, 'ttm_revenue'),
         ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
         ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
+      };
+    } else {
+      // Fallback: marktgemiddelde (2e call, alleen indien nodig)
+      bron_detail = 'search/market';
+      const market = await searchByMarket(location, apiKey);
+      const marketListings = market?.results ?? [];
+      aantal_comparables = marketListings.length;
+      metrics = {
+        ttm_revenue: avgMetric(marketListings, 'ttm_revenue'),
+        ttm_occupancy: avgMetric(marketListings, 'ttm_occupancy'),
+        ttm_avg_rate: avgMetric(marketListings, 'ttm_avg_rate'),
       };
     }
 
@@ -105,6 +112,7 @@ export default async function handler(req, res) {
       verwacht_jaarhuur: metrics.ttm_revenue != null ? Math.round(metrics.ttm_revenue) : null,
       bezetting: metrics.ttm_occupancy != null ? Math.round(metrics.ttm_occupancy * 1000) / 1000 : null,
       gemiddelde_dagprijs: metrics.ttm_avg_rate != null ? Math.round(metrics.ttm_avg_rate) : null,
+      aantal_comparables,
       bron: 'airroi',
       bron_detail,
     });

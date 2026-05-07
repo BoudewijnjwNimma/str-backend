@@ -59,21 +59,28 @@ function avgMetric(listings, field) {
 }
 
 async function getAirroiMetrics(location, apiKey) {
-  // Primair: comparables (1 call)
+  // Primair: gemiddelde over alle comparables (1 call)
   const comp = await getComparables(location, apiKey);
-  const first = comp?.listings?.[0]?.performance_metrics ?? null;
+  const listings = comp?.listings ?? [];
 
-  if (first?.ttm_revenue) {
-    return { ...first, bron_detail: 'comparables' };
+  if (listings.length > 0 && avgMetric(listings, 'ttm_revenue') != null) {
+    return {
+      ttm_revenue: avgMetric(listings, 'ttm_revenue'),
+      ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
+      ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
+      aantal_comparables: listings.length,
+      bron_detail: 'comparables',
+    };
   }
 
   // Fallback: marktgemiddelde (alleen indien comparables leeg)
   const market = await searchByMarket(location, apiKey);
-  const listings = market?.results ?? [];
+  const marketListings = market?.results ?? [];
   return {
-    ttm_revenue: avgMetric(listings, 'ttm_revenue'),
-    ttm_occupancy: avgMetric(listings, 'ttm_occupancy'),
-    ttm_avg_rate: avgMetric(listings, 'ttm_avg_rate'),
+    ttm_revenue: avgMetric(marketListings, 'ttm_revenue'),
+    ttm_occupancy: avgMetric(marketListings, 'ttm_occupancy'),
+    ttm_avg_rate: avgMetric(marketListings, 'ttm_avg_rate'),
+    aantal_comparables: marketListings.length,
     bron_detail: 'search/market',
   };
 }
@@ -152,6 +159,7 @@ export default async function handler(req, res) {
       gemiddelde_dagprijs: airroi.ttm_avg_rate != null ? Math.round(airroi.ttm_avg_rate) : null,
       waardestijging_jaar: Math.round(waardestijging_jaar),
       totaal_rendement_pct,
+      aantal_comparables: airroi.aantal_comparables,
       locatie: [location.locality, location.region, location.country].filter(Boolean).join(', '),
     });
   } catch (err) {
