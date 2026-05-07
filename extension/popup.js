@@ -26,14 +26,49 @@ function showResultaat(data) {
   document.getElementById('resultaat').style.display  = 'block';
 }
 
+function setAdresHint(nauwkeurigheid) {
+  const hint = document.getElementById('adres-hint');
+  if (!hint) return;
+  if (nauwkeurigheid) {
+    hint.textContent = `📍 Automatisch ingevuld op basis van: ${nauwkeurigheid}`;
+    hint.style.color = '#888';
+  } else {
+    hint.textContent = 'Geen listing gedetecteerd — vul handmatig in';
+    hint.style.color = '#bbb';
+  }
+}
+
+// Vul adres en vraagprijs in vanuit de actieve listing-pagina
+chrome.storage.local.get(
+  ['listing_adres', 'listing_vraagprijs', 'listing_nauwkeurigheid', 'laatste_adres'],
+  (data) => {
+    const adresVeld = document.getElementById('adres');
+    const prijsVeld = document.getElementById('vraagprijs');
+
+    if (data.listing_adres) {
+      adresVeld.value = data.listing_adres;
+      setAdresHint(data.listing_nauwkeurigheid);
+    } else if (data.laatste_adres) {
+      adresVeld.value = data.laatste_adres;
+      setAdresHint(null);
+    } else {
+      setAdresHint(null);
+    }
+
+    if (data.listing_vraagprijs) {
+      prijsVeld.value = data.listing_vraagprijs;
+    }
+  }
+);
+
 document.getElementById('berekenBtn').addEventListener('click', async () => {
-  const adres           = document.getElementById('adres').value.trim();
-  const vraagprijs      = parseFloat(document.getElementById('vraagprijs').value);
-  const slaapkamers     = parseInt(document.getElementById('slaapkamers').value, 10);
+  const adres            = document.getElementById('adres').value.trim();
+  const vraagprijs       = parseFloat(document.getElementById('vraagprijs').value);
+  const slaapkamers      = parseInt(document.getElementById('slaapkamers').value, 10);
   const target_rendement = parseFloat(document.getElementById('target_rendement').value);
-  const airbnb_fee_pct  = parseFloat(document.getElementById('airbnb_fee').value);
+  const airbnb_fee_pct   = parseFloat(document.getElementById('airbnb_fee').value);
   const management_fee_pct = parseFloat(document.getElementById('management_fee').value);
-  const property_tax_pct = parseFloat(document.getElementById('property_tax').value);
+  const property_tax_pct  = parseFloat(document.getElementById('property_tax').value);
 
   if (!adres) { setStatus('Vul een adres in.', true); return; }
   if (!vraagprijs || vraagprijs <= 0) { setStatus('Vul een geldige vraagprijs in.', true); return; }
@@ -65,8 +100,6 @@ document.getElementById('berekenBtn').addEventListener('click', async () => {
 
     setStatus('');
     showResultaat(data);
-
-    // Sla laatste adres op voor volgend gebruik
     chrome.storage.local.set({ laatste_adres: adres });
 
   } catch (err) {
@@ -74,9 +107,4 @@ document.getElementById('berekenBtn').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
   }
-});
-
-// Herstel laatste adres bij openen popup
-chrome.storage.local.get('laatste_adres', ({ laatste_adres }) => {
-  if (laatste_adres) document.getElementById('adres').value = laatste_adres;
 });
