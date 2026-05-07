@@ -162,13 +162,16 @@ export default async function handler(req, res) {
     const property_tax    = vraagprijs * (property_tax_pct / 100);
     const netto_jaarhuur  = bruto - airbnb_fee - management_fee - property_tax - verzekering - onderhoud - overig;
 
-    const kosten_koper        = vraagprijs * 0.11;
-    const waardestijging_jaar = vraagprijs * 0.025;
-    const max_bod             = netto_jaarhuur / (target_rendement / 100) - kosten_koper;
+    // max_bod oplossing waarbij waardestijging = 2,5% van max_bod en kosten_koper = 11% van max_bod:
+    // max_bod = (netto_jaarhuur / (r - 0.025)) / 1.11
+    const r                   = target_rendement / 100;
+    const max_bod             = (netto_jaarhuur / (r - 0.025)) / 1.11;
+    const kosten_koper        = max_bod * 0.11;
+    const waardestijging_jaar = max_bod * 0.025;
     const verschil            = vraagprijs - max_bod;
     const verschil_pct        = Math.round(Math.abs(verschil) / Math.max(vraagprijs, max_bod) * 100);
     const totaal_rendement_pct = Math.round(
-      ((netto_jaarhuur + waardestijging_jaar) / (vraagprijs + kosten_koper)) * 10000
+      ((netto_jaarhuur + waardestijging_jaar) / (max_bod + kosten_koper)) * 10000
     ) / 100;
 
     const advies = verschil > 0
