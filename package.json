@@ -1,0 +1,8 @@
+{
+  "name": "str-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "vercel": "^39.0.0"
+  }
+}
