@@ -107,7 +107,13 @@ export default async function handler(req, res) {
     let aantal_comparables = 0;
 
     // Stap 1: calculator ($0,20)
-    const calcData = await getCalculator(adres, apiKey).catch(() => null);
+    let calcData = null;
+    let calcError = null;
+    try {
+      calcData = await getCalculator(adres, apiKey);
+    } catch (e) {
+      calcError = e.message;
+    }
     const calcMetrics = extractCalcMetrics(calcData);
     if (calcMetrics) {
       metrics = calcMetrics;
@@ -152,6 +158,7 @@ export default async function handler(req, res) {
       aantal_comparables,
       bron: 'airroi',
       bron_detail,
+      debug_calc: calcData ?? { error: calcError },
     });
   } catch (err) {
     return res.status(502).json({ error: err.message });
